@@ -130,10 +130,9 @@ balance must return 402, not 400. These are contracts the Order Service depends
 on and must not silently break.
 
 **Layer 3 - Integration tests (`WalletServiceIntegrationTest`):** Real Postgres
-via Testcontainers. This is where the concurrency guarantees are actually proven
-- mocks cannot verify them. The critical test spins up 10 threads simultaneously
+via Testcontainers. This is where the concurrency guarantees are actually proven as mocks cannot verify them. The critical test spins up 10 threads simultaneously
 attempting to deduct from a wallet with exactly ₹100. Without `SELECT FOR UPDATE`
-several would succeed and the balance would go negative. With it, exactly 1
+several could possibly succeed and the balance would go to negative. With it, exactly 1
 succeeds and the rest receive `InsufficientBalanceException`. A second concurrency
 test sends the same idempotency key from 5 threads simultaneously - the wallet
 must be debited exactly once regardless of which thread wins the insert race.
@@ -170,4 +169,6 @@ and validating that `READ_COMMITTED` isolation is sufficient given the locking
 strategy. All architectural decisions - ledger-derived balance, DB-layer
 idempotency, pessimistic locking - were reasoned through deliberately rather than
 accepted as boilerplate output.
+
+---
 
