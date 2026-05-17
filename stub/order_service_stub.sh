@@ -122,7 +122,7 @@ txs = json.load(sys.stdin)
 print(f'  Total entries: {len(txs)}')
 for tx in txs[:8]:
     sign = '+' if tx['type'] == 'TOPUP' else '-'
-    print(f\"  {tx['created_at'][:19]}  {sign}₹{tx['amount']:>8}  {tx['type']}\")
+    print(f\"  {tx['createdAt'][:19]}  {sign}₹{tx['amount']:>8}  {tx['type']}\")
 " 2>/dev/null || curl -s "$BASE_URL/wallets/$WALLET_ID/transactions"
 
 separator

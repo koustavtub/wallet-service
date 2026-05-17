@@ -1,8 +1,20 @@
 # Wallet Service
 
-A prepaid wallet service for a logistics platform. The core mechanics are pretty straightforward: customers load funds into their wallet, and every time they place an order, we deduct exactly ₹100. The golden rule of this service? A wallet's balance can never drop below zero.
+A prepaid wallet service for a logistics platform. The core mechanics are pretty straightforward: customers load funds into their wallet, and every time they place an order, we deduct exactly ₹100. 
+Rules:
+    - Wallet Balance Never drops below zero.
+    - Deduction amt. is always fixed at ₹100
 
 ---
+
+## Prerequisites
+
+- **Java 21+** — to run the application
+- **Docker 24+** — for Postgres and the full-stack compose setup (Docker Desktop on Mac/Windows includes Compose v2; on Linux install it separately)
+- **Make** — for the convenience commands
+- **uuidgen** — used in the stub script to generate idempotency keys (pre-installed on macOS; on Ubuntu: `apt install uuid-runtime`)
+- **python3** — used in the stub script for the ledger pretty-print (pre-installed on macOS and most Linux distros; the stub falls back to raw JSON if unavailable)
+
 
 ## Getting Started
 
