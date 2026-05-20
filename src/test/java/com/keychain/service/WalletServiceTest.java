@@ -152,23 +152,57 @@ class WalletServiceTest {
     class Topup {
 
         @Test
-        @DisplayName("records a TOPUP transaction")
+        @DisplayName("records a TOPUP transaction with idempotency key")
         void topup_valid_recordsTransaction() {
+            String key = UUID.randomUUID().toString();
+            when(txRepo.findByIdempotencyKey(key)).thenReturn(Optional.empty());
             when(walletRepo.findById(walletId)).thenReturn(Optional.of(wallet));
             when(txRepo.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
-            Transaction result = walletService.topup(walletId, new BigDecimal("500.00"));
+            Transaction result = walletService.topup(walletId, new BigDecimal("500.00"), key);
 
             assertThat(result.getType()).isEqualTo(TransactionType.TOPUP);
             assertThat(result.getAmount()).isEqualByComparingTo("500.00");
+            verify(txRepo).save(any(Transaction.class));
+        }
+
+        @Test
+        @DisplayName("idempotent replay — returns existing transaction without a new topup")
+        void topup_duplicateKey_returnsOriginal() {
+            String key = UUID.randomUUID().toString();
+            Transaction existing = mock(Transaction.class);
+            when(txRepo.findByIdempotencyKey(key)).thenReturn(Optional.of(existing));
+
+            Transaction result = walletService.topup(walletId, new BigDecimal("500.00"), key);
+
+            assertThat(result).isSameAs(existing);
+            verifyNoInteractions(walletRepo);
+            verify(txRepo, never()).save(any());
+        }
+
+        @Test
+        @DisplayName("idempotency race: DB constraint fires → fetches existing and returns it")
+        void topup_constraintRaceCondition_returnsExisting() {
+            String key = UUID.randomUUID().toString();
+            Transaction existing = mock(Transaction.class);
+
+            when(txRepo.findByIdempotencyKey(key)).thenReturn(Optional.empty(), Optional.of(existing));
+            when(walletRepo.findById(walletId)).thenReturn(Optional.of(wallet));
+            when(txRepo.save(any())).thenThrow(new DataIntegrityViolationException("duplicate key"));
+
+            Transaction result = walletService.topup(walletId, new BigDecimal("500.00"), key);
+
+            assertThat(result).isSameAs(existing);
         }
 
         @Test
         @DisplayName("throws WalletNotFoundException for unknown wallet")
         void topup_unknownWallet_throws() {
+            String key = UUID.randomUUID().toString();
+            when(txRepo.findByIdempotencyKey(key)).thenReturn(Optional.empty());
             when(walletRepo.findById(walletId)).thenReturn(Optional.empty());
 
-            assertThatThrownBy(() -> walletService.topup(walletId, new BigDecimal("100")))
+            assertThatThrownBy(() -> walletService.topup(walletId, new BigDecimal("100"), key))
                     .isInstanceOf(WalletNotFoundException.class);
         }
     }

@@ -37,15 +37,35 @@ public class WalletService {
     }
 
     /**
-     * Adds funds to a wallet. No constraints beyond amount > 0 (enforced by validation layer).
+     * Adds funds to a wallet.
+     *
+     * Guarantees:
+     * 1. Amount constraint — amount > 0 (enforced by the validation layer).
+     * 2. Idempotency — duplicate idempotency keys return the original transaction,
+     *    not a new topup. The same DB unique constraint and catch pattern used by
+     *    deduct() applies here: if the customer's frontend retries after a network
+     *    timeout, the wallet is credited exactly once.
      */
     @Transactional
-    public Transaction topup(UUID walletId, BigDecimal amount) {
+    public Transaction topup(UUID walletId, BigDecimal amount, String idempotencyKey) {
+        var existing = txRepo.findByIdempotencyKey(idempotencyKey);
+        if (existing.isPresent()) {
+            log.debug("Idempotent topup replay for key={}", idempotencyKey);
+            return existing.get();
+        }
+
         Wallet wallet = walletRepo.findById(walletId)
                 .orElseThrow(() -> new WalletNotFoundException(walletId));
 
-        Transaction tx = Transaction.topup(wallet, amount);
-        return txRepo.save(tx);
+        try {
+            Transaction tx = Transaction.topup(wallet, amount, idempotencyKey);
+            return txRepo.save(tx);
+        } catch (DataIntegrityViolationException ex) {
+            log.warn("Idempotency key race resolved for topup key={}", idempotencyKey);
+            return txRepo.findByIdempotencyKey(idempotencyKey)
+                    .orElseThrow(() -> new IllegalStateException(
+                            "Idempotency constraint fired but transaction not found", ex));
+        }
     }
 
     /**

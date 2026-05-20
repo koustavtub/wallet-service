@@ -30,7 +30,7 @@ class WalletServiceIntegrationTest extends IntegrationTestBase {
     @DisplayName("full lifecycle: create → topup → deduct → balance")
     void fullLifecycle() {
         var wallet = walletService.createWallet();
-        walletService.topup(wallet.getId(), new BigDecimal("300.00"));
+        walletService.topup(wallet.getId(), new BigDecimal("300.00"), UUID.randomUUID().toString());
 
         var deduction = walletService.deduct(wallet.getId(), UUID.randomUUID().toString());
         assertThat(deduction.getType()).isEqualTo(TransactionType.DEDUCTION);
@@ -44,8 +44,8 @@ class WalletServiceIntegrationTest extends IntegrationTestBase {
     @DisplayName("balance reflects multiple topups and deductions correctly")
     void balance_multipleMovements() {
         var wallet = walletService.createWallet();
-        walletService.topup(wallet.getId(), new BigDecimal("500.00"));
-        walletService.topup(wallet.getId(), new BigDecimal("200.00"));
+        walletService.topup(wallet.getId(), new BigDecimal("500.00"), UUID.randomUUID().toString());
+        walletService.topup(wallet.getId(), new BigDecimal("200.00"), UUID.randomUUID().toString());
         walletService.deduct(wallet.getId(), UUID.randomUUID().toString());
         walletService.deduct(wallet.getId(), UUID.randomUUID().toString());
 
@@ -79,7 +79,7 @@ class WalletServiceIntegrationTest extends IntegrationTestBase {
         @DisplayName("wallet balance never goes negative")
         void balance_neverNegative() {
             var wallet = walletService.createWallet();
-            walletService.topup(wallet.getId(), new BigDecimal("100.00"));
+            walletService.topup(wallet.getId(), new BigDecimal("100.00"), UUID.randomUUID().toString());
             walletService.deduct(wallet.getId(), UUID.randomUUID().toString());
 
             // Attempt a second deduction — must fail
@@ -94,7 +94,7 @@ class WalletServiceIntegrationTest extends IntegrationTestBase {
         @DisplayName("deduction succeeds at exactly ₹100 and leaves zero balance")
         void deduct_exactlyOneHundred_leavesZero() {
             var wallet = walletService.createWallet();
-            walletService.topup(wallet.getId(), new BigDecimal("100.00"));
+            walletService.topup(wallet.getId(), new BigDecimal("100.00"), UUID.randomUUID().toString());
             walletService.deduct(wallet.getId(), UUID.randomUUID().toString());
 
             assertThat(walletService.getBalance(wallet.getId())).isEqualByComparingTo("0.00");
@@ -108,33 +108,58 @@ class WalletServiceIntegrationTest extends IntegrationTestBase {
     class Idempotency {
 
         @Test
-        @DisplayName("replaying the same idempotency key does not deduct twice")
-        void replay_sameKey_noDoubleDeduction() {
+        @DisplayName("replaying the same deduct idempotency key does not deduct twice")
+        void deduct_replay_sameKey_noDoubleDeduction() {
             var wallet = walletService.createWallet();
-            walletService.topup(wallet.getId(), new BigDecimal("200.00"));
+            walletService.topup(wallet.getId(), new BigDecimal("200.00"), UUID.randomUUID().toString());
 
             String key = UUID.randomUUID().toString();
             Transaction first = walletService.deduct(wallet.getId(), key);
             Transaction second = walletService.deduct(wallet.getId(), key);
 
-            // Same transaction returned
             assertThat(second.getId()).isEqualTo(first.getId());
-            // Balance deducted only once
             assertThat(walletService.getBalance(wallet.getId())).isEqualByComparingTo("100.00");
         }
 
         @Test
-        @DisplayName("idempotent replay works even when balance would be insufficient for a new deduction")
-        void replay_insufficientBalance_stillReturnsOriginal() {
+        @DisplayName("deduct idempotent replay works even when balance would be insufficient for a new deduction")
+        void deduct_replay_insufficientBalance_stillReturnsOriginal() {
             var wallet = walletService.createWallet();
-            walletService.topup(wallet.getId(), new BigDecimal("100.00"));
+            walletService.topup(wallet.getId(), new BigDecimal("100.00"), UUID.randomUUID().toString());
 
             String key = UUID.randomUUID().toString();
             Transaction first = walletService.deduct(wallet.getId(), key);
 
-            // Balance is now 0 — a NEW deduction would fail, but replay must succeed
             Transaction replayed = walletService.deduct(wallet.getId(), key);
             assertThat(replayed.getId()).isEqualTo(first.getId());
+        }
+
+        @Test
+        @DisplayName("replaying the same topup idempotency key does not credit twice")
+        void topup_replay_sameKey_noDoubleCreditl() {
+            var wallet = walletService.createWallet();
+            String key = UUID.randomUUID().toString();
+
+            Transaction first = walletService.topup(wallet.getId(), new BigDecimal("500.00"), key);
+            Transaction second = walletService.topup(wallet.getId(), new BigDecimal("500.00"), key);
+
+            assertThat(second.getId()).isEqualTo(first.getId());
+            assertThat(walletService.getBalance(wallet.getId())).isEqualByComparingTo("500.00");
+        }
+
+        @Test
+        @DisplayName("topup idempotent replay returns original even if amount in retry differs")
+        void topup_replay_differentAmount_returnsOriginal() {
+            var wallet = walletService.createWallet();
+            String key = UUID.randomUUID().toString();
+
+            Transaction first = walletService.topup(wallet.getId(), new BigDecimal("500.00"), key);
+            // Retry with a different amount — original transaction must win
+            Transaction replayed = walletService.topup(wallet.getId(), new BigDecimal("999.00"), key);
+
+            assertThat(replayed.getId()).isEqualTo(first.getId());
+            assertThat(replayed.getAmount()).isEqualByComparingTo("500.00");
+            assertThat(walletService.getBalance(wallet.getId())).isEqualByComparingTo("500.00");
         }
     }
 
@@ -153,7 +178,7 @@ class WalletServiceIntegrationTest extends IntegrationTestBase {
         @DisplayName("10 concurrent deductions on ₹100 wallet — exactly 1 succeeds")
         void concurrentDeductions_onlyOneSucceeds() throws InterruptedException {
             var wallet = walletService.createWallet();
-            walletService.topup(wallet.getId(), new BigDecimal("100.00"));
+            walletService.topup(wallet.getId(), new BigDecimal("100.00"), UUID.randomUUID().toString());
 
             int threadCount = 10;
             ExecutorService executor = Executors.newFixedThreadPool(threadCount);
@@ -199,7 +224,7 @@ class WalletServiceIntegrationTest extends IntegrationTestBase {
         @DisplayName("concurrent replays of the same idempotency key — wallet deducted exactly once")
         void concurrentIdempotentReplays_deductedOnce() throws InterruptedException {
             var wallet = walletService.createWallet();
-            walletService.topup(wallet.getId(), new BigDecimal("500.00"));
+            walletService.topup(wallet.getId(), new BigDecimal("500.00"), UUID.randomUUID().toString());
 
             String sharedKey = UUID.randomUUID().toString();
             int threadCount = 5;
@@ -241,9 +266,9 @@ class WalletServiceIntegrationTest extends IntegrationTestBase {
     @DisplayName("transaction history contains all entries in reverse chronological order")
     void transactions_orderedNewestFirst() {
         var wallet = walletService.createWallet();
-        walletService.topup(wallet.getId(), new BigDecimal("500.00"));
+        walletService.topup(wallet.getId(), new BigDecimal("500.00"), UUID.randomUUID().toString());
         walletService.deduct(wallet.getId(), UUID.randomUUID().toString());
-        walletService.topup(wallet.getId(), new BigDecimal("200.00"));
+        walletService.topup(wallet.getId(), new BigDecimal("200.00"), UUID.randomUUID().toString());
 
         var txs = walletService.getTransactions(wallet.getId());
 
