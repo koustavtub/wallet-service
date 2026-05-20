@@ -37,27 +37,32 @@ public class WalletService {
     }
 
     /**
-     * Adds funds to a wallet. No constraints beyond amount > 0 (enforced by validation layer).
+     * Adds funds to a wallet. FOR UPDATE locks the row so concurrent topups
+     * don't produce a lost write on cached_balance.
      */
     @Transactional
     public Transaction topup(UUID walletId, BigDecimal amount) {
-        Wallet wallet = walletRepo.findById(walletId)
+        Wallet wallet = walletRepo.findByIdForUpdate(walletId)
                 .orElseThrow(() -> new WalletNotFoundException(walletId));
 
-        Transaction tx = Transaction.topup(wallet, amount);
-        return txRepo.save(tx);
+        wallet.creditBalance(amount);
+        walletRepo.save(wallet);
+
+        return txRepo.save(Transaction.topup(wallet, amount));
     }
 
     /**
      * Deducts ₹100 from the wallet for an order.
      *
      * Guarantees:
-     * 1. Balance constraint — deduction only proceeds if balance ≥ ₹100.
+     * 1. Balance constraint — deduction only proceeds if cached_balance ≥ ₹100 (O(1) check).
      * 2. Idempotency — duplicate idempotency keys return the original transaction,
      *    not a new deduction. Enforced by a DB unique constraint; no second deduction
      *    can sneak through even under concurrent retries.
      * 3. Concurrency safety — SELECT FOR UPDATE serializes concurrent deductions on
      *    the same wallet, preventing double-spend.
+     * 4. Atomicity — cached_balance and the transaction row are updated in the same
+     *    transaction, so they can never diverge.
      *
      * Isolation: READ_COMMITTED is sufficient here because FOR UPDATE re-reads the
      * latest committed data after acquiring the lock, collapsing the window for
@@ -67,35 +72,32 @@ public class WalletService {
     public Transaction deduct(UUID walletId, String idempotencyKey) {
         // ── Idempotency check ─────────────────────────────────────────────────
         // Fast path: if this key was already processed, return the original result.
-        // This handles retries before we even touch the wallet.
         var existing = txRepo.findByIdempotencyKey(idempotencyKey);
         if (existing.isPresent()) {
             log.debug("Idempotent replay for key={}", idempotencyKey);
             return existing.get();
         }
 
-        // ── Lock & read balance ───────────────────────────────────────────────
+        // ── Lock & balance check ──────────────────────────────────────────────
         // FOR UPDATE locks the wallet row so concurrent deductions serialize here.
-        // Any other deduct() call for this wallet blocks until this txn commits.
+        // Reading cached_balance from the locked row is an O(1) point lookup.
         Wallet wallet = walletRepo.findByIdForUpdate(walletId)
                 .orElseThrow(() -> new WalletNotFoundException(walletId));
 
-        BigDecimal balance = txRepo.computeBalance(walletId);
-
-        if (balance.compareTo(DEDUCTION_AMOUNT) < 0) {
-            throw new InsufficientBalanceException(balance);
+        if (wallet.getCachedBalance().compareTo(DEDUCTION_AMOUNT) < 0) {
+            throw new InsufficientBalanceException(wallet.getCachedBalance());
         }
 
-        // ── Insert deduction ──────────────────────────────────────────────────
+        // ── Update balance + insert transaction atomically ────────────────────
+        wallet.debitBalance(DEDUCTION_AMOUNT);
+        walletRepo.save(wallet);
+
         // If two concurrent requests somehow both pass the balance check (shouldn't
         // happen with FOR UPDATE), the DB unique constraint on idempotency_key is
         // the final safety net — one will fail with DataIntegrityViolationException.
         try {
-            Transaction tx = Transaction.deduction(wallet, DEDUCTION_AMOUNT, idempotencyKey);
-            return txRepo.save(tx);
+            return txRepo.save(Transaction.deduction(wallet, DEDUCTION_AMOUNT, idempotencyKey));
         } catch (DataIntegrityViolationException ex) {
-            // Race condition on idempotency key: another thread committed first.
-            // Fetch and return that transaction — this is still a success.
             log.warn("Idempotency key race resolved for key={}", idempotencyKey);
             return txRepo.findByIdempotencyKey(idempotencyKey)
                     .orElseThrow(() -> new IllegalStateException(
@@ -104,14 +106,13 @@ public class WalletService {
     }
 
     /**
-     * Returns the current balance. Balance is always derived — never stored.
+     * Returns the cached balance. O(1) — reads the single cached_balance column.
      */
     @Transactional(readOnly = true)
     public BigDecimal getBalance(UUID walletId) {
-        if (!walletRepo.existsById(walletId)) {
-            throw new WalletNotFoundException(walletId);
-        }
-        return txRepo.computeBalance(walletId);
+        Wallet wallet = walletRepo.findById(walletId)
+                .orElseThrow(() -> new WalletNotFoundException(walletId));
+        return wallet.getCachedBalance();
     }
 
     /**
