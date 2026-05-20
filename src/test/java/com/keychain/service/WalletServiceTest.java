@@ -52,13 +52,15 @@ class WalletServiceTest {
             String key = UUID.randomUUID().toString();
             when(txRepo.findByIdempotencyKey(key)).thenReturn(Optional.empty());
             when(walletRepo.findByIdForUpdate(walletId)).thenReturn(Optional.of(wallet));
-            when(txRepo.computeBalance(walletId)).thenReturn(new BigDecimal("100.00"));
+            when(wallet.getCachedBalance()).thenReturn(new BigDecimal("100.00"));
             when(txRepo.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
             Transaction result = walletService.deduct(walletId, key);
 
             assertThat(result.getType()).isEqualTo(TransactionType.DEDUCTION);
             assertThat(result.getAmount()).isEqualByComparingTo("100.00");
+            verify(wallet).debitBalance(WalletService.DEDUCTION_AMOUNT);
+            verify(walletRepo).save(wallet);
             verify(txRepo).save(any(Transaction.class));
         }
 
@@ -68,7 +70,7 @@ class WalletServiceTest {
             String key = UUID.randomUUID().toString();
             when(txRepo.findByIdempotencyKey(key)).thenReturn(Optional.empty());
             when(walletRepo.findByIdForUpdate(walletId)).thenReturn(Optional.of(wallet));
-            when(txRepo.computeBalance(walletId)).thenReturn(new BigDecimal("500.00"));
+            when(wallet.getCachedBalance()).thenReturn(new BigDecimal("500.00"));
             when(txRepo.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
             assertThatNoException().isThrownBy(() -> walletService.deduct(walletId, key));
@@ -80,12 +82,14 @@ class WalletServiceTest {
             String key = UUID.randomUUID().toString();
             when(txRepo.findByIdempotencyKey(key)).thenReturn(Optional.empty());
             when(walletRepo.findByIdForUpdate(walletId)).thenReturn(Optional.of(wallet));
-            when(txRepo.computeBalance(walletId)).thenReturn(new BigDecimal("99.99"));
+            when(wallet.getCachedBalance()).thenReturn(new BigDecimal("99.99"));
 
             assertThatThrownBy(() -> walletService.deduct(walletId, key))
                     .isInstanceOf(InsufficientBalanceException.class)
                     .hasMessageContaining("99.99");
 
+            verify(wallet, never()).debitBalance(any());
+            verify(walletRepo, never()).save(any());
             verify(txRepo, never()).save(any());
         }
 
@@ -95,7 +99,7 @@ class WalletServiceTest {
             String key = UUID.randomUUID().toString();
             when(txRepo.findByIdempotencyKey(key)).thenReturn(Optional.empty());
             when(walletRepo.findByIdForUpdate(walletId)).thenReturn(Optional.of(wallet));
-            when(txRepo.computeBalance(walletId)).thenReturn(BigDecimal.ZERO);
+            when(wallet.getCachedBalance()).thenReturn(BigDecimal.ZERO);
 
             assertThatThrownBy(() -> walletService.deduct(walletId, key))
                     .isInstanceOf(InsufficientBalanceException.class);
@@ -122,12 +126,10 @@ class WalletServiceTest {
             String key = UUID.randomUUID().toString();
             Transaction existing = mock(Transaction.class);
 
-            when(txRepo.findByIdempotencyKey(key)).thenReturn(Optional.empty());
-            when(walletRepo.findByIdForUpdate(walletId)).thenReturn(Optional.of(wallet));
-            when(txRepo.computeBalance(walletId)).thenReturn(new BigDecimal("200.00"));
-            when(txRepo.save(any())).thenThrow(new DataIntegrityViolationException("duplicate key"));
-            // Second lookup after constraint fires
             when(txRepo.findByIdempotencyKey(key)).thenReturn(Optional.empty(), Optional.of(existing));
+            when(walletRepo.findByIdForUpdate(walletId)).thenReturn(Optional.of(wallet));
+            when(wallet.getCachedBalance()).thenReturn(new BigDecimal("200.00"));
+            when(txRepo.save(any())).thenThrow(new DataIntegrityViolationException("duplicate key"));
 
             Transaction result = walletService.deduct(walletId, key);
 
@@ -152,21 +154,23 @@ class WalletServiceTest {
     class Topup {
 
         @Test
-        @DisplayName("records a TOPUP transaction")
+        @DisplayName("records a TOPUP transaction and credits cached balance")
         void topup_valid_recordsTransaction() {
-            when(walletRepo.findById(walletId)).thenReturn(Optional.of(wallet));
+            when(walletRepo.findByIdForUpdate(walletId)).thenReturn(Optional.of(wallet));
             when(txRepo.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
             Transaction result = walletService.topup(walletId, new BigDecimal("500.00"));
 
             assertThat(result.getType()).isEqualTo(TransactionType.TOPUP);
             assertThat(result.getAmount()).isEqualByComparingTo("500.00");
+            verify(wallet).creditBalance(new BigDecimal("500.00"));
+            verify(walletRepo).save(wallet);
         }
 
         @Test
         @DisplayName("throws WalletNotFoundException for unknown wallet")
         void topup_unknownWallet_throws() {
-            when(walletRepo.findById(walletId)).thenReturn(Optional.empty());
+            when(walletRepo.findByIdForUpdate(walletId)).thenReturn(Optional.empty());
 
             assertThatThrownBy(() -> walletService.topup(walletId, new BigDecimal("100")))
                     .isInstanceOf(WalletNotFoundException.class);
@@ -178,20 +182,21 @@ class WalletServiceTest {
     class GetBalance {
 
         @Test
-        @DisplayName("returns aggregated balance")
-        void getBalance_returnsAggregated() {
-            when(walletRepo.existsById(walletId)).thenReturn(true);
-            when(txRepo.computeBalance(walletId)).thenReturn(new BigDecimal("350.00"));
+        @DisplayName("returns cached balance — O(1) point read")
+        void getBalance_returnsCachedBalance() {
+            when(walletRepo.findById(walletId)).thenReturn(Optional.of(wallet));
+            when(wallet.getCachedBalance()).thenReturn(new BigDecimal("350.00"));
 
             BigDecimal balance = walletService.getBalance(walletId);
 
             assertThat(balance).isEqualByComparingTo("350.00");
+            verifyNoInteractions(txRepo);
         }
 
         @Test
         @DisplayName("throws WalletNotFoundException for unknown wallet")
         void getBalance_unknownWallet_throws() {
-            when(walletRepo.existsById(walletId)).thenReturn(false);
+            when(walletRepo.findById(walletId)).thenReturn(Optional.empty());
 
             assertThatThrownBy(() -> walletService.getBalance(walletId))
                     .isInstanceOf(WalletNotFoundException.class);
