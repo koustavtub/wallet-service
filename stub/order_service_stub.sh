@@ -41,11 +41,13 @@ ok "Wallet created: $WALLET_ID"
 # ── 2. Top up ₹500 ────────────────────────────────────────────────────────────
 separator
 step "2. Top up ₹500"
+TOPUP_KEY=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
 TOPUP_RESP=$(curl -s -X POST "$BASE_URL/wallets/$WALLET_ID/topup" \
   -H "Content-Type: application/json" \
+  -H "Idempotency-Key: $TOPUP_KEY" \
   -d '{"amount": 500}')
 echo "  Response: $TOPUP_RESP"
-ok "Wallet funded"
+ok "Wallet funded (key=$TOPUP_KEY)"
 
 # ── 3. Place 5 orders (5 × ₹100 = ₹500 total) ────────────────────────────────
 separator
@@ -86,8 +88,10 @@ fi
 # ── 5. Top up ₹200 and replay order 1 ────────────────────────────────────────
 separator
 step "5. Top up ₹200 then replay order 1 with the SAME idempotency key"
+TOPUP_KEY2=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
 curl -s -X POST "$BASE_URL/wallets/$WALLET_ID/topup" \
   -H "Content-Type: application/json" \
+  -H "Idempotency-Key: $TOPUP_KEY2" \
   -d '{"amount": 200}' > /dev/null
 
 # Re-use order 1's key (we need to re-run to get it — simplify by generating a fresh scenario)

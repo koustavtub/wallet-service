@@ -46,7 +46,7 @@ I set up Swagger integration. So visiting `{server-url}/swagger-ui.html` will sh
 | Method | Endpoint | Who calls it | Notes |
 |--------|----------|--------------|-------|
 | `POST` | `/wallets` | Test / setup | Creates a new wallet |
-| `POST` | `/wallets/:id/topup` | Customer (frontend) | Body: `{"amount": 500}` |
+| `POST` | `/wallets/:id/topup` | Customer (frontend) | Body: `{"amount": 500}`. Requires `Idempotency-Key` header |
 | `POST` | `/wallets/:id/deduct` | Order Service | Requires `Idempotency-Key` header |
 | `GET` | `/wallets/:id/balance` | Anyone | Returns derived balance |
 | `GET` | `/wallets/:id/transactions` | Anyone | Full ledger, newest first |
@@ -70,10 +70,15 @@ FROM transactions WHERE wallet_id = ?
 
 **Why:** Storing a balance means it can drift from the ledger if a bug partially applies a transaction. Deriving it from the ledger means correctness is structural - the ledger *is* the truth and there is nothing to drift. The trade-off is a slightly heavier read, which is acceptable at this scale and easily solved with a `cached_balance` column if needed later.
 
-### 2. Idempotency is a database constraint, not an application logic
-I didn't want to rely on in-memory caches or Redis for idempotency. Instead, the `transactions` table has a `UNIQUE` constraint on `idempotency_key`. When a deduction comes in, the service tries a "fast path" lookup to see if the key exists. If two identical requests hit the service at the exact same millisecond and pass that fast path, the DB constraint acts as our safety net. One insert wins, and the other throws a `DataIntegrityViolationException`. The app catches that exception, fetches the winning transaction, and returns it.
+### 2. Idempotency is a database constraint, not application logic — and it applies to both endpoints
 
-**Why:** DB constraints are guarantees that survive server crashes, restarts, and weird network races.
+Both `/topup` and `/deduct` require an `Idempotency-Key` header. The failure modes are symmetric: a customer clicking "Add ₹500" on a slow network has exactly the same retry problem as the Order Service retrying `/deduct` after a timeout. Crediting a wallet twice is at least as bad as a double deduction — you give away money rather than just blocking an order.
+
+The mechanism is identical for both: the `transactions` table has a `UNIQUE` constraint on `idempotency_key`. On each request, the service does a fast-path lookup first. If the key already exists, the original transaction is returned immediately without touching the wallet. If two identical requests arrive concurrently and both pass the fast path, the DB constraint is the final safety net — one insert wins, the other throws `DataIntegrityViolationException`, and the service catches that and returns the winning row.
+
+The `idempotency_key` column is nullable at the DB level (no migration needed to enforce this for existing rows) and required at the application layer for all new transactions.
+
+**Why:** DB constraints are guarantees that survive server crashes, restarts, and concurrent retries across any number of app instances.
 
 ### 3. Concurrency is handled in the DB with `SELECT FOR UPDATE`
 
@@ -111,7 +116,7 @@ id                UUID    PK
 wallet_id         UUID    FK → wallets(id)
 type              ENUM    ('TOPUP', 'DEDUCTION')
 amount            NUMERIC(12,2)   CHECK (amount > 0)
-idempotency_key   TEXT    UNIQUE (nullable; deductions only)
+idempotency_key   TEXT    UNIQUE (nullable at DB level; required by application for all rows)
 created_at        TIMESTAMP
 ```
 
@@ -148,6 +153,9 @@ several could possibly succeed and the balance would go to negative. With it, ex
 succeeds and the rest receive `InsufficientBalanceException`. A second concurrency
 test sends the same idempotency key from 5 threads simultaneously - the wallet
 must be debited exactly once regardless of which thread wins the insert race.
+Topup idempotency is also integration-tested: replaying the same topup key must
+credit the wallet exactly once, and replaying with a different amount must return
+the original transaction (amount from the first call wins).
 
 
 

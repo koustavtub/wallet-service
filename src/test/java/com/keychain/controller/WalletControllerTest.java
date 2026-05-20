@@ -49,13 +49,15 @@ class WalletControllerTest {
     // ── POST /wallets/:id/topup ───────────────────────────────────────────────
 
     @Test
-    @DisplayName("POST /topup with valid amount → 201")
+    @DisplayName("POST /topup with valid amount and key → 201")
     void topup_validAmount_returns201() throws Exception {
         UUID walletId = UUID.randomUUID();
-        Transaction tx = mockTransaction(walletId, TransactionType.TOPUP, new BigDecimal("500.00"), null);
-        when(walletService.topup(eq(walletId), any())).thenReturn(tx);
+        String key = UUID.randomUUID().toString();
+        Transaction tx = mockTransaction(walletId, TransactionType.TOPUP, new BigDecimal("500.00"), key);
+        when(walletService.topup(eq(walletId), any(), eq(key))).thenReturn(tx);
 
         mockMvc.perform(post("/wallets/{id}/topup", walletId)
+                        .header("Idempotency-Key", key)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"amount\": 500.00}"))
                 .andExpect(status().isCreated())
@@ -64,11 +66,40 @@ class WalletControllerTest {
     }
 
     @Test
+    @DisplayName("POST /topup without Idempotency-Key header → 400")
+    void topup_missingIdempotencyKey_returns400() throws Exception {
+        UUID walletId = UUID.randomUUID();
+
+        mockMvc.perform(post("/wallets/{id}/topup", walletId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"amount\": 500}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("MISSING_HEADER"));
+    }
+
+    @Test
+    @DisplayName("POST /topup idempotent replay → 201 with original transaction")
+    void topup_idempotentReplay_returns201() throws Exception {
+        UUID walletId = UUID.randomUUID();
+        String key = UUID.randomUUID().toString();
+        Transaction tx = mockTransaction(walletId, TransactionType.TOPUP, new BigDecimal("500.00"), key);
+        when(walletService.topup(eq(walletId), any(), eq(key))).thenReturn(tx);
+
+        mockMvc.perform(post("/wallets/{id}/topup", walletId)
+                        .header("Idempotency-Key", key)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"amount\": 500.00}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.idempotency_key").value(key));
+    }
+
+    @Test
     @DisplayName("POST /topup with zero amount → 400")
     void topup_zeroAmount_returns400() throws Exception {
         UUID walletId = UUID.randomUUID();
 
         mockMvc.perform(post("/wallets/{id}/topup", walletId)
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"amount\": 0}"))
                 .andExpect(status().isBadRequest())
@@ -81,6 +112,7 @@ class WalletControllerTest {
         UUID walletId = UUID.randomUUID();
 
         mockMvc.perform(post("/wallets/{id}/topup", walletId)
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{}"))
                 .andExpect(status().isBadRequest());
@@ -90,10 +122,12 @@ class WalletControllerTest {
     @DisplayName("POST /topup for unknown wallet → 404")
     void topup_unknownWallet_returns404() throws Exception {
         UUID walletId = UUID.randomUUID();
-        when(walletService.topup(eq(walletId), any()))
+        String key = UUID.randomUUID().toString();
+        when(walletService.topup(eq(walletId), any(), eq(key)))
                 .thenThrow(new WalletNotFoundException(walletId));
 
         mockMvc.perform(post("/wallets/{id}/topup", walletId)
+                        .header("Idempotency-Key", key)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"amount\": 100}"))
                 .andExpect(status().isNotFound())

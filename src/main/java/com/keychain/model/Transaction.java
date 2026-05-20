@@ -30,9 +30,9 @@ public class Transaction {
     private BigDecimal amount;
 
     /**
-     * Only set for DEDUCTION entries. Enforced unique at the DB level.
-     * This is the idempotency anchor — a duplicate key causes a constraint
-     * violation, which the service layer catches and treats as a replay.
+     * Required for both TOPUP and DEDUCTION entries. Enforced unique at the DB level.
+     * This is the idempotency anchor — a duplicate key causes a constraint violation,
+     * which the service layer catches and treats as a replay.
      */
     @Column(name = "idempotency_key", unique = true)
     private String idempotencyKey;
@@ -45,11 +45,12 @@ public class Transaction {
         this.createdAt = Instant.now();
     }
 
-    public static Transaction topup(Wallet wallet, BigDecimal amount) {
+    public static Transaction topup(Wallet wallet, BigDecimal amount, String idempotencyKey) {
         Transaction t = new Transaction();
         t.wallet = wallet;
         t.type = TransactionType.TOPUP;
         t.amount = amount;
+        t.idempotencyKey = idempotencyKey;
         return t;
     }
 

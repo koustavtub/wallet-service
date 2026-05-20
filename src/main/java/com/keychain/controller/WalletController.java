@@ -34,13 +34,17 @@ public class  WalletController {
     /**
      * POST /wallets/:id/topup
      * Adds funds. Amount comes from the request body.
+     * Requires the Idempotency-Key header — rejects requests without one.
+     * The frontend generates a UUID when the customer initiates the topup and
+     * reuses it on retry, guaranteeing the wallet is credited exactly once.
      */
     @PostMapping("/{id}/topup")
     public ResponseEntity<TransactionResponse> topup(
             @PathVariable UUID id,
+            @RequestHeader(value = "Idempotency-Key") String idempotencyKey,
             @Valid @RequestBody TopupRequest request
     ) {
-        Transaction tx = walletService.topup(id, request.amount());
+        Transaction tx = walletService.topup(id, request.amount(), idempotencyKey);
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(TransactionResponse.from(tx));
     }
